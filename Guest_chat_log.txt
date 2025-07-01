@@ -1,0 +1,28 @@
+[2025-07-01 18:03:27] Guest: hosla
+[2025-07-01 18:03:27] Assistant: Hosla is a support service for elderly citizens.
+[2025-07-01 18:05:33] Guest: emergency
+[2025-07-01 18:05:33] Assistant: Say "emergency" or press the red alert button in the app to notify caregivers.
+[2025-07-01 18:09:41] Guest: membership plan of Hosla
+[2025-07-01 18:09:41] Assistant: Say “help” or press the help icon to see a guide on using Hosla features.
+[2025-07-01 18:12:48] Guest: membership plan
+[2025-07-01 18:12:48] Assistant: 🤖 I couldn't find a close match. Please try rephrasing your question.
+[2025-07-01 18:27:36] Guest: events
+[2025-07-01 18:27:36] Assistant: 🤖 I couldn't find a close match. Please try rephrasing your question.
+[2025-07-01 18:27:36] Guest: event
+[2025-07-01 18:27:36] Assistant: ❌ Unable to fetch events: HTTPSConnectionPool(host='hosla.in', port=443): Max retries exceeded with url: /events.php (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1028)')))
+[2025-07-01 18:34:16] Guest: event
+[2025-07-01 18:34:16] Assistant: 📭 No upcoming events found on Hosla right now.
+[2025-07-01 18:34:16] Guest: events
+[2025-07-01 18:34:16] Assistant: 📭 No upcoming events found on Hosla right now.
+[2025-07-01 18:34:16] Guest: hosla founder
+[2025-07-01 18:34:16] Assistant: The Founder of Hosla  is Mr.Shantanu Mukhopadhyay
+[2025-07-01 18:35:01] Guest: mental age
+[2025-07-01 18:35:01] Assistant: 🚫 Sorry, this feature is for members only.
+[2025-07-01 18:37:26] Guest: emergency
+[2025-07-01 18:37:26] Assistant: Say "emergency" or press the red alert button in the app to notify caregivers.
+[2025-07-01 19:14:16] Guest: membership plan
+[2025-07-01 19:14:16] Assistant: For further details contact Hosla.
+[2025-07-01 19:24:31] Guest: membership plan
+[2025-07-01 19:24:31] Assistant: For further details contact Hosla.
+[2025-07-01 19:32:56] Guest: minimum age limit of member
+[2025-07-01 19:32:56] Assistant: For further details contact Hosla.

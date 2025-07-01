@@ -1,0 +1,9 @@
+gTTS
+langdetect
+pandas
+sentence-transformers
+torch
+pydub
+playsound==1.2.2
+requests
+beautifulsoup4
