@@ -1,0 +1,16 @@
+gTTS
+langdetect
+pandas
+sentence-transformers
+torch
+pydub
+playsound==1.2.2
+requests
+beautifulsoup4
+googletrans==4.0.0rc1
+wikipedia
+deep_translator
+lxml
+ipython
+flask
+flask_cors
