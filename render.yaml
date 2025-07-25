@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: hosla-chatbot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    runtime: python3.11.4
