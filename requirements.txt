@@ -14,3 +14,4 @@ lxml
 ipython
 flask
 flask_cors
+gunicorn
