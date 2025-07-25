@@ -1,7 +1,11 @@
 services:
   - type: web
-    name: hosla-chatbot
+    name: hosla-public-chatbot
     env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app"
-    runtime: python3.10
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    runtime: python-3.11.4
+    branch: main
+    region: oregon
+    repo: https://github.com/Sreejita67/Hosla_Public_ChatBot
