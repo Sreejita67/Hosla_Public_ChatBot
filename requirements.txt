@@ -1,0 +1,16 @@
+flask
+gunicorn
+flask_cors
+
+pandas
+requests
+beautifulsoup4
+lxml
+wikipedia
+googletrans==4.0.0rc1
+deep_translator
+
+sentence-transformers==2.2.2
+torch==1.12.1  
+pydub
+
