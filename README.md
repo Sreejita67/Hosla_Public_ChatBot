@@ -16,7 +16,7 @@ Welcome to the Hosla Public Chatbot – an intelligent FAQ assistant for Hosla u
 ☎️ Unknown questions prompt contact with Hosla (clickable call link)
 
 🛠️ Tech Stack
-Python 3.9+
+Python 3.11.4
 
 SentenceTransformers (all-MiniLM-L6-v2)
 
