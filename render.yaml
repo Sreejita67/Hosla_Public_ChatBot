@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: hosla-public-chatbot
-    env: docker
-    repo: https://github.com/Sreejita67/Hosla_Public_Chatbot
-    branch: main
-    plan: free
-    dockerfilePath: Dockerfile
-    healthCheckPath: /
