@@ -1,7 +1,6 @@
 flask
 gunicorn
 flask_cors
-
 pandas
 requests
 beautifulsoup4
@@ -9,8 +8,11 @@ lxml
 wikipedia
 googletrans==4.0.0rc1
 deep_translator
-
 sentence-transformers==2.2.2
-torch==1.12.1  
+transformers==4.31.0
+torch==2.0.1
 pydub
-
+scikit-learn
+huggingface_hub==0.15.1
+numpy<2
+langdetect
