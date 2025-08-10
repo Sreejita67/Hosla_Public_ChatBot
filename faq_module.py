@@ -1,17 +1,17 @@
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module='wikipedia')
 import sys
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding='utf-8')
-import wikipedia
 import os
+import time 
 import pathlib
+import unicodedata
 import re, requests
 import pandas as pd
-import requests
+import pytz
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer, util
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib3
 from googletrans import Translator
 from langdetect import detect
@@ -19,30 +19,55 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from difflib import get_close_matches
 import xml.etree.ElementTree as ET
+from huggingface_hub import HfApi, HfFolder, Repository
+from io import StringIO
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Load FAQ CSV
-FAQ_FILE = "FAQ - Sheet1.csv"
-if not os.path.exists(FAQ_FILE):
-    raise FileNotFoundError(f"❌ File '{FAQ_FILE}' not found.")
+# ================================================
+# 📄 Load FAQ CSV from Google Sheet or fallback
+# ================================================
+GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT8IArJoxgQ2EL2fQJn_rUVozWqJbz-n0Qn42rTMDHHZezCbn5MEa-0TcvRfPiEGPyDj3W96LkRFwSH/pub?gid=0&single=true&output=csv"
 
-df = pd.read_csv(FAQ_FILE, usecols=[0, 1], names=["Question", "Answer"], header=0, encoding='utf-8', on_bad_lines='skip')
-df = df.dropna(subset=['Question', 'Answer'])
+def load_faq_from_google_sheet():
+    try:
+        response = requests.get(GOOGLE_SHEET_CSV_URL, timeout=10)
+        if response.status_code == 200:
+            csv_data = StringIO(response.text)
+            df = pd.read_csv(csv_data, usecols=[0, 1], names=["Question", "Answer"], header=0, encoding='utf-8', on_bad_lines='skip')
+            print("✅ Loaded FAQ from live Google Sheet.")
+            return df.dropna(subset=['Question', 'Answer'])
+        else:
+            print(f"⚠️ Failed to fetch from Google Sheet. Status: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ Exception while loading from Google Sheet: {e}")
+    
+    return None
+
+# Load from Google Sheet, or fallback to local file
+faq_df = load_faq_from_google_sheet()
+if faq_df is None:
+    FAQ_FILE = "FAQ - Sheet1.csv"
+    if not os.path.exists(FAQ_FILE):
+        raise FileNotFoundError(f"❌ File '{FAQ_FILE}' not found.")
+    faq_df = pd.read_csv(FAQ_FILE, usecols=[0, 1], names=["Question", "Answer"], header=0, encoding='utf-8', on_bad_lines='skip')
+    faq_df = faq_df.dropna(subset=['Question', 'Answer'])
+    print("✅ Loaded FAQ from local CSV.")
+
+df = faq_df 
 
 # Load BERT model and encode questions
 model = SentenceTransformer('all-MiniLM-L6-v2')
-question_embeddings = model.encode(df['Question'].tolist(), convert_to_tensor=True)
+question_embeddings = model.encode(faq_df['Question'].tolist(), convert_to_tensor=True)
 
 translator = Translator()
-wikipedia.set_lang("en")
 
 # Supported languages
 SUPPORTED_LANGUAGES = ['en', 'bn', 'hi', 'ta', 'te', 'mr', 'pa', 'or']
 
 upcoming_event_keywords = [
     "upcoming event", "upcoming events", "future events", "hosla events", "upcoming programs",
-    "sessions happening", "event list", "আসন্ন ইভেন্ট", "আসন্ন অনুষ্ঠান", 
+    "sessions happening", "event list", "আসন্ন ইভেন্ট", "আসন্ন অনুষ্ঠান", "events",
     "आगामी इवेंट", "आगामी कार्यक्रम", "आगामी घटना"
 ]
 
@@ -150,62 +175,51 @@ def clean_query(text):
 def similar(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
-@lru_cache(maxsize=128)
-def search_wikipedia(query, user_lang='en'):
-    def try_wikipedia_summary(lang):
-        try:
-            wikipedia.set_lang(lang)
-            search_results = wikipedia.search(query)
-            for title in search_results[:3]:
-                try:
-                    summary = wikipedia.summary(title, sentences=3)
-                    if any(tag in summary.lower() for tag in ["film", "tv", "anime", "fictional", "band"]):
-                        continue
-                    return summary + f"\n🔗 Source: https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
-                except:
-                    continue
-        except:
-            pass
-        return None
-
-    # 1. Try in detected language
-    summary = try_wikipedia_summary(user_lang)
-    # 2. If nothing found, try in English
-    if not summary and user_lang != 'en':
-        summary = try_wikipedia_summary('en')
-    # 3. Fallback
-    return summary if summary else "🤖 Sorry, I couldn't find anything relevant on that topic."
-
 def show_event_feedback(user_lang="en"):
     try:
-        feedback_file = "hosla_members_feedback.csv"
-        if not os.path.exists(feedback_file):
-            return "🙁 No members' feedback available right now."
+        csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT8IArJoxgQ2EL2fQJn_rUVozWqJbz-n0Qn42rTMDHHZezCbn5MEa-0TcvRfPiEGPyDj3W96LkRFwSH/pub?gid=1271142221&single=true&output=csv"
 
-        df_event = pd.read_csv(feedback_file)
+        response = requests.get(csv_url, timeout=5)  
+        response.raise_for_status()  # Raise error for bad response
+
+        df_event = pd.read_csv(StringIO(response.text))
+
         if df_event.empty:
-            return "🙁 No members'feedback available right now."
+            text = "🙁 No members' feedback available right now."
+            return translator.translate(text, dest=user_lang).text if user_lang != "en" else text
 
         responses = []
         for _, row in df_event.iterrows():
             name = row.get("Name", "Someone")
             relation = row.get("Title (Relation to Hosla)", "")
             message = str(row.get("Description (Message)", "")).strip()
-
             if not message:
                 continue
 
-            base_line = f"{name} ({relation}) said: \"{message}\""
+            try:
+                said_translated = translator.translate("said", dest=user_lang).text if user_lang != "en" else "said"
+            except:
+                said_translated = "said"
+
+            base_line = f"{name} ({relation}) {said_translated}: \"{message}\""
+
             if user_lang != "en":
-                translated = translator.translate(message, dest=user_lang).text
-                base_line += f"\n🗣️ Translated: \"{translated}\""
+                try:
+                    translated = translator.translate(message, dest=user_lang).text
+                    base_line += f"\n🗣️ Translated: \"{translated}\""
+                except:
+                    pass
+
             responses.append(base_line)
 
-        return "\n\n".join(responses[:3])  # Limit to top 3 for brevity
+        return "\n\n".join(responses[:3])
 
     except Exception as e:
-        print(f"❌ Error reading event feedback: {e}")
-        return "🙁 Sorry, couldn't load event feedback right now."
+        print(f"❌ Error reading public sheet: {e}")
+        text = "🙁 Sorry, couldn't load event feedback right now."
+        return translator.translate(text, dest=user_lang).text if user_lang != "en" else text
+
+
 
 def translate_text(text, dest_language="en"):
     try:
@@ -214,115 +228,246 @@ def translate_text(text, dest_language="en"):
     except Exception:
         return text  # Fallback to original if translation fails
 
-
 def show_events_info(user_input):
-    events_path = os.path.join("assets", "Hosla Events.csv")
-
-    if not os.path.exists(events_path):
-        return "Sorry, event information is currently unavailable."
-
-    df = pd.read_csv(events_path)
-
     lang = detect_language_safe(user_input.lower())
 
-    # Normalize column names
-    df.columns = [col.strip().lower() for col in df.columns]
-
-    # Check required columns
-    required_cols = ["event", "event description", "image path", "date", "time", "location"]
-    if not all(col in df.columns for col in required_cols):
-        return translate_text("⚠️ The events file is missing required columns.", lang)
-
-    # Combine Date and Time into a single datetime column
-    try:
-        df["datetime"] = pd.to_datetime(df["date"] + " " + df["time"])
-    except Exception as e:
-        return f"⚠️ Could not parse event dates: {e}"
-
-    now = datetime.now()
-
-    # Filter events
-    if "past" in user_input.lower():
-        filtered_df = df[df["datetime"] < now]
-    elif "upcoming" in user_input.lower():
-        filtered_df = df[df["datetime"] >= now]
+    # Detect event type and choose correct sheet URL
+    if any(kw in user_input.lower() for kw in upcoming_event_keywords):
+        sheet_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT8IArJoxgQ2EL2fQJn_rUVozWqJbz-n0Qn42rTMDHHZezCbn5MEa-0TcvRfPiEGPyDj3W96LkRFwSH/pub?gid=1925531775&single=true&output=csv"
+    elif any(kw in user_input.lower() for kw in past_event_keywords):
+        sheet_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT8IArJoxgQ2EL2fQJn_rUVozWqJbz-n0Qn42rTMDHHZezCbn5MEa-0TcvRfPiEGPyDj3W96LkRFwSH/pub?gid=1834108950&single=true&output=csv"
     else:
-        filtered_df = df
+        return translate_text("❓ Please specify whether you want to see past or upcoming events.", lang)
 
-    if filtered_df.empty:
-        return translate_text("No events found matching your query.", lang)
+    # Read CSV data
+    try:
+        df = pd.read_csv(sheet_url)
+    except Exception as e:
+        return translate_text(f"⚠️ Could not load event data: {e}", lang)
 
+    # Normalize columns
+    df.columns = [col.strip().lower() for col in df.columns]
+    required_cols = ["event", "event description", "date", "time", "location"]
+
+    if not all(col in df.columns for col in required_cols):
+        return translate_text("⚠️ The events sheet is missing required columns.", lang)
+
+    # Parse datetime (used only for display formatting)
+    try:
+        df["datetime"] = pd.to_datetime(df["date"] + " " + df["time"], dayfirst=True, errors='coerce')
+    except:
+        df["datetime"] = None
+
+    # Prepare responses
     responses = []
-
-    for _, row in filtered_df.iterrows():
+    for _, row in df.iterrows():
         event = translate_text(str(row.get("event", "Unnamed Event")), lang)
         desc = translate_text(str(row.get("event description", "")), lang)
         location = translate_text(str(row.get("location", "Unknown")), lang)
-        datetime_str = row["datetime"].strftime("%B %d, %Y at %I:%M %p")
 
-        response = f"📌 {event}\n📝 {desc}\n📍 Location: {location}\n🗓️ Date & Time: {datetime_str}"
+        if pd.notnull(row.get("datetime")):
+            datetime_str = row["datetime"].strftime("%B %d, %Y at %I:%M %p")
+        else:
+            datetime_str = f"{row.get('date', '')} {row.get('time', '')}"
 
-        # Add clickable image path (for PowerShell or Terminal)
-        image_filename = str(row.get("image path", "")).strip()
-        img_path = os.path.join("assets", "images", image_filename)
-        if os.path.exists(img_path):
-            abs_path = pathlib.Path(img_path).absolute().as_uri()
-            response += f"\n🖼️ View Image: {abs_path}"
-
+        response = f"📌 {event}\n📝 {desc}\n📍 {location}\n🗓️ {datetime_str}"
         responses.append(response)
 
+    if not responses:
+        return translate_text("No events found in the sheet.", lang)
+
     return "\n\n".join(responses) + f"\n\n{translate_text('These are the events we found.', lang)}"
+    
+def normalize_text(text):
+    return re.sub(r'[^\w\s]', '', text.lower().strip())
 
 def get_answer_from_faq(query: str, is_guest: bool = True) -> tuple:
-    user_input_lower = query.lower()
-    user_input = query  # for compatibility with old references
+    user_input = query
+
+        # Emergency fuzzy check (multilingual + typo-tolerant)
+    from difflib import get_close_matches
+
+    def contains_emergency_keyword(text):
+        keywords = ["emergency", "জরুরী", "आपातकाल","প্রয়োজন","help"]
+        text_words = text.lower().split()
+        for word in text_words:
+            if get_close_matches(word, keywords, n=1, cutoff=0.8):
+                return True
+        return False
+
+    if contains_emergency_keyword(user_input):
+        emergency_msg = (
+            "🚨 I understand you need an urgent help. Please stay calm.\n"
+            "For any help during any emergency,Please dial +91 78110 09309.\n"
+            "Hosla is always here for you. ❤️"
+        )
+        try:
+            user_lang = detect_language_safe(user_input)
+            if user_lang != "en":
+                emergency_msg = translator.translate(emergency_msg, dest=user_lang).text
+        except:
+            pass
+        return emergency_msg, False
+
+    user_input_lower = normalize_text(user_input)
     user_is_guest = is_guest
-    restricted_keywords = ["mental age", "happiness quotient", "mental health"]
+    
+    # 🌐 Multilingual restricted keywords
+    restricted_keywords = [
+        "mental age", "happiness quotient", "mental health",
+        "मानसिक स्वास्थ्य", "मनोस्वास्थ्य", "ख़ुशी का स्तर", "आनंद स्तर",
+        "मानसिक आरोग्य", "आनंद प्रमाण",
+        "மனநலம்", "மனச் சுகாதாரம்", "மகிழ்ச்சி அளவீடு",
+        "ਮਾਨਸਿਕ ਸਿਹਤ", "ਖੁਸ਼ੀ ਦਾ ਪੱਧਰ",
+        "మానసిక ఆరోగ్యం", "ఆనంద స్థాయి",
+        "মানসিক স্বাস্থ্য", "আনন্দমাত্রা", "মানসিক বয়স"
+    ]
 
-    # 🔒 Restrict some features for guest users
-    if user_is_guest:
-        for keyword in restricted_keywords:
-            if keyword in user_input_lower:
-                return "🚫 Sorry, this feature is for members only.", False
-
-    # 🌐 Detect input language
     try:
         user_lang = detect_language_safe(user_input)
+    except:
+        user_lang = "en"
+
+    # 🔒 Guest restriction check
+    if user_is_guest:
+        for keyword in restricted_keywords:
+            if normalize_text(keyword) in user_input_lower:
+                response_text = "🚫 Sorry, this feature is for members only."
+                try:
+                    if user_lang != "en":
+                        response_text = translator.translate(response_text, dest=user_lang).text
+                except:
+                    pass
+                return response_text, False
+
+    # 🌐 Translation for semantic matching
+    try:
         translated_input = translator.translate(user_input, dest="en").text if user_lang != "en" else user_input
     except:
         translated_input = user_input
-        user_lang = "en"
 
-    # 📣 Show feedback if user asks
-        # 📣 Check if user asked for general or event feedback
-    feedback_triggers = ["user feedback", "what members say", "hosla feedback", "event feedback", "audience feedback", "feedback"]
-    if any(kw in translated_input.lower() for kw in feedback_triggers):
-        feedback_response = show_event_feedback(user_lang)
-        return feedback_response, False
+    translated_input_lower = normalize_text(translated_input)
+    original_input_lower = user_input.lower().strip()
+    # 👋 Greeting response
+    greeting_inputs = [
+        "hi", "hello", "hey", "হ্যালো", "নমस्तে", "হাই", "হে", "হেলো", "সুপ্রভাত", "শুভ সকাল",
+        "good morning", "good evening", "good afternoon"
+    ]
+    normalized_input = original_input_lower.replace(",", "").replace("?", "")
+    if normalized_input in [g.lower() for g in greeting_inputs]:
+        greeting_response = "Hi there! 👋 I'm Hosla Public Chatbot. How can I assist you today?"
+        try:
+            if user_lang != "en":
+                greeting_response = translator.translate(greeting_response, dest=user_lang).text
+        except:
+            pass
+        return greeting_response, False
 
-    translated_input_lower = translated_input.lower()
-    original_input_lower = user_input.lower()
+    # 🌐 Multilingual Feedback Trigger
+    feedback_triggers_multilingual = {
+        "en": ["user feedback", "what members say", "hosla feedback", "event feedback", "audience feedback", "feedback"],
+        "hi": ["प्रतिक्रिया", "सदस्य क्या कहते हैं", "होसला प्रतिक्रिया", "कार्यक्रम प्रतिक्रिया", "दर्शकों की प्रतिक्रिया"],
+        "bn": ["প্রতিক্রিয়া", "সদস্যরা কী বলেন", "হোসলা প্রতিক্রিয়া", "ইভেন্ট প্রতিক্রিয়া", "দর্শকদের প্রতিক্রিয়া"],
+        "pa": ["ਪ੍ਰਤੀਕਿਰਿਆ", "ਮੈਂਬਰ ਕੀ ਕਹਿੰਦੇ ਹਨ", "ਹੌਸਲਾ ਫੀਡਬੈਕ", "ਈਵੈਂਟ ਫੀਡਬੈਕ", "ਦਰਸ਼ਕਾਂ ਦੀ ਪ੍ਰਤੀਕਿਰਿਆ"],
+        "ta": ["கருத்து", "உறுப்பினர்கள் சொல்வது", "ஹொஸ்லா கருத்து", "நிகழ்ச்சி கருத்து", "பார்வையாளர்கள் கருத்து"],
+        "te": ["అభిప్రాయం", "సభ్యులు ఏమంటున్నారు", "హోస్లా అభిప్రాయం", "ఈవెంట్ అభిప్రాయం", "ప్రేక్షకుల అభిప్రాయం"],
+        "mr": ["प्रतिक्रिया", "सदस्य काय म्हणतात", "होसला अभिप्राय", "कार्यक्रम अभिप्राय", "प्रेक्षक अभिप्राय"],
+        "or": ["ପ୍ରତିକ୍ରିୟା", "ସଦସ୍ୟମାନେ କଣ କହନ୍ତି", "ହୋସଲା ପ୍ରତିକ୍ରିୟା", "ଇଭେଣ୍ଟ ପ୍ରତିକ୍ରିୟା", "ଦର୍ଶକ ପ୍ରତିକ୍ରିୟା"]
+    }
 
-    # ✅ Upcoming events logic
-    if any(kw in original_input_lower for kw in upcoming_event_keywords) or "upcoming" in original_input_lower or "events" in original_input_lower:
-       return show_events_info(original_input_lower), False
+    def normalize(text):
+        return unicodedata.normalize("NFKC", text).strip().lower()
+    
+    def similar(a, b):
+        return SequenceMatcher(None, a, b).ratio()
+        
+    def check_feedback_trigger(user_input, user_lang):
+        triggers = feedback_triggers_multilingual.get(user_lang, feedback_triggers_multilingual["en"])
+        user_input = normalize(user_input)
+        for trigger in triggers:
+            if similar(user_input, normalize(trigger)) > 0.85:
+               return True
+        return False
 
-    # ✅ Past events logic
-    if any(kw in original_input_lower for kw in past_event_keywords) or "past" in original_input_lower:
-       return show_events_info(original_input_lower), False
+    user_input_lower = user_input.lower()
+
+    if check_feedback_trigger(user_input_lower, user_lang):
+       return show_event_feedback(user_lang), False
 
 
-    # 🏥 Check if it's a health-related query
-    if is_health_query(translated_input):
-        health_info = fetch_medline_info(translated_input, user_lang)
-        if health_info:
-            return health_info, False
+    if any(kw in query.lower() for kw in upcoming_event_keywords + past_event_keywords):
+       return show_events_info(query), False
 
-    # ✅ Direct match for "founder of hosla"
+        
+    # ✨ Multilingual internship keywords
+    internship_keywords_by_lang = {
+        "en": ["intern", "internship", "volunteer", "work with hosla", "join hosla", "career", "part of hosla", "can I work as an intern", "want to be a part of hosla"],
+        "hi": ["इंटर्न", "होसला में काम", "स्वयंसेवक", "होसला में जुड़ें"],
+        "bn": ["ইন্টার্ন", "হোসলাতে কাজ", "হোসলা তে কাজ", "স্বেচ্ছাসেবক", "হোসলা তে যুক্ত হই","হোসলার অংশ হতে চাই", "হোসলা তে যুক্ত হতে চাই"],
+        "ta": ["இண்டர்ன்ஷிப்", "ஹோஸ்லாவில் வேலை", "விருப்ப சேவையாளர்"],
+        "te": ["ఇంటర్న్", "ఇంటర్న్‌షిప్", "వాలంటీర్", "హోస్లాలో పని చేయాలి", "హోస్లాలో చేరాలనుకుంటున్నాను", "ఉద్యోగ అవకాశాలు", "హోస్లా భాగం కావాలనుకుంటున్నాను"],
+        "pa": ["ਇੰਟਰਨ", "ਇੰਟਰਨਸ਼ਿਪ", "ਸੇਵਾ ਕਰਤਾ", "ਹੌਸਲਾ ਵਿੱਚ ਕੰਮ ਕਰਨਾ ਚਾਹੁੰਦਾ ਹਾਂ","ਹੌਸਲਾ ਵਿੱਚ ਸ਼ਾਮਿਲ ਹੋਣਾ", "ਕੈਰੀਅਰ ਮੌਕੇ", "ਹੌਸਲਾ ਦਾ ਹਿੱਸਾ ਬਣਨਾ"],
+        "mr": ["इंटर्न", "इंटर्नशिप", "स्वयंसेवक", "होसला मध्ये काम करायचं आहे","होसला मध्ये सामील व्हायचं आहे", "करिअर संधी", "होसला चा भाग बनायचं आहे"]
+    }
+
+    detected_intern_lang = None
+    for lang, keywords in internship_keywords_by_lang.items():
+        for kw in keywords:
+            match = get_close_matches(user_input_lower, [kw.lower()], n=1, cutoff=0.75)
+            if match:
+                detected_intern_lang = lang
+                break
+        if detected_intern_lang:
+            break
+
+
+    if detected_intern_lang:
+        internship_responses = {
+            "en": (
+                "Great! We'd love to have you! 🙌\n"
+                "Please share your interest and email your Resume to hosla.dalmadal@gmail.com or shantanumproductmanager@gmail.com or shraddhawelfareassociation@gmail.com.\n"
+                "📞 You can also call us at +91-7811 009 309 for internship or volunteering opportunities."
+            ),
+            "hi": (
+                "बहुत बढ़िया! हमें खुशी होगी कि आप हमारे साथ जुड़ें। 🙌\n"
+                "कृपया अपना रुचि पत्र और रिज़्यूमे इस ईमेल पर भेजें: hosla.dalmadal@gmail.com या shantanumproductmanager@gmail.com या shraddhawelfareassociation@gmail.com\n"
+                "📞 आप इस नंबर पर कॉल भी कर सकते हैं: +91-7811 009 309 (सोम-शुक्र, सुबह 10 – शाम 6)।"
+            ),
+            "bn": (
+                "দারুন! আমরা খুব খুশি হব যদি আপনি আমাদের সাথে যুক্ত হন। 🙌\n"
+                "অনুগ্রহ করে আপনার আগ্রহ এবং রেজুমে পাঠান এই ইমেইল ঠিকানায়: hosla.dalmadal@gmail.com অথবা shantanumproductmanager@gmail.com অথবা shraddhawelfareassociation@gmail.com\n"
+                "📞 ফোন করুন: +91-7811 009 309 (সোম-শুক্র, সকাল ১০টা – সন্ধ্যা ৬টা)।"
+            ),
+            "ta": (
+                "அருமை! நீங்கள் எங்களுடன் இணைய விரும்புகிறீர்கள் என்பதை கேட்டு மகிழ்ச்சி! 🙌\n"
+                "தயவுசெய்து உங்கள் விருப்பம் மற்றும் பயோடேட்டா இமெயில் செய்யவும்: hosla.dalmadal@gmail.com அல்லது shantanumproductmanager@gmail.com அல்லது shraddhawelfareassociation@gmail.com\n"
+                "📞 மேலும் தகவலுக்கு இந்த எண்ணில் அழைக்கவும்: +91-7811 009 309 (திங்கள்–வெள்ளி, காலை 10 முதல் மாலை 6 வரை)."
+            ),
+            "te": (
+                "చాలా బాగుంది! మీరు మాకు చాలా ఇష్టం! 🙌\n"
+                "దయచేసి మీ ఆసక్తిని పంచుకోండి మరియు మీ రెజ్యూమ్‌ను hosla.dalmadal@gmail.com లేదా shantanumproductmanager@gmail.com లేదా shraddhawelfareassociation@gmail.com కు ఇమెయిల్ చేయండి.\n"
+                "📞 ఇంటర్న్‌షిప్ లేదా వాలంటీరింగ్ అవకాశాల కోసం మీరు +91-7811 009 309 కు కూడా కాల్ చేయవచ్చు."
+            ),
+            "pa": (
+                "ਵਧੀਆ! ਅਸੀਂ ਖੁਸ਼ ਹਾਂ ਕਿ ਤੁਸੀਂ ਸਾਡੇ ਨਾਲ ਜੁੜਣਾ ਚਾਹੁੰਦੇ ਹੋ! 🙌\n"
+                "ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਦਿਲਚਸਪੀ ਅਤੇ ਰਿਜ਼ਿਊਮ ਇਹਨਾਂ ਈਮੇਲ ਪਤੇ 'ਤੇ ਭੇਜੋ: hosla.dalmadal@gmail.com, shantanumproductmanager@gmail.com ਜਾਂ shraddhawelfareassociation@gmail.com\n"
+                "📞 ਇੰਟਰਨਸ਼ਿਪ ਜਾਂ ਵੋਲੰਟੀਅਰ ਮੌਕਿਆਂ ਲਈ +91-7811 009 309 'ਤੇ ਸੰਪਰਕ ਕਰੋ।"
+            ),
+            "mr": (
+                "छान! तुम्ही आमच्यासोबत जोडले जाल याचा आम्हाला खूप आनंद होईल! 🙌\n"
+                "कृपया तुमची आवड आणि रिझ्युमे पुढील ईमेलवर पाठवा: hosla.dalmadal@gmail.com, shantanumproductmanager@gmail.com किंवा shraddhawelfareassociation@gmail.com\n"
+                "📞 इंटर्नशिप किंवा स्वयंसेवक संधींसाठी कृपया +91-7811 009 309 या क्रमांकावर संपर्क करा."
+            )
+
+        }
+
+        reply_text = internship_responses.get(detected_intern_lang, internship_responses["en"])
+        return reply_text, False
+
+    # ✅ Direct match for founder query
     founder_phrases = [
         "founder of hosla", "hosla founder", "হোসলার প্রতিষ্ঠাতা", "হোসলার ফাউন্ডার",
-        "হোসলা প্রতিষ্ঠাতা", "হোসলার ফাউন্ডার", "হোসলার প্রতিষ্ঠাতা",
-        "होसला के संस्थापक", "संस्थापक होसला"
+        "হোসলা প্রতিষ্ঠাতা", "होसला के संस्थापक", "संस्थापक होसला"
     ]
 
     if any(phrase in original_input_lower or phrase in translated_input_lower for phrase in founder_phrases):
@@ -333,8 +478,8 @@ def get_answer_from_faq(query: str, is_guest: bool = True) -> tuple:
         except Exception as e:
             print("⚠️ Translation error:", e)
         return founder_answer, False
-    
-    # 🤖 Try semantic match from FAQ
+
+    # 🤖 Semantic match from FAQ
     user_embedding = model.encode(translated_input, convert_to_tensor=True)
     similarities = util.cos_sim(user_embedding, question_embeddings)[0]
     max_score = float(similarities.max())
@@ -351,16 +496,26 @@ def get_answer_from_faq(query: str, is_guest: bool = True) -> tuple:
             print("⚠️ Translation error:", e)
         return answer, False
 
-    # 🌐 Wikipedia fallback for meaningful queries
-    if len(translated_input.strip().split()) > 1:
-        summary = search_wikipedia(user_input, user_lang)
-        if summary and "🤖 Sorry" not in summary and "⚠️" not in summary:
-           return summary, False
-        else:
-           log_unknown_question(user_input, "Guest" if user_is_guest else "Member")
+    # 🧠 Fuzzy matching fallback for minor typos
+    best_match = get_close_matches(translated_input_lower, df["Question"].apply(normalize_text).tolist(), n=1, cutoff=0.6)
+    if best_match:
+        match_index = df[df["Question"].apply(lambda q: normalize_text(q) == best_match[0])].index[0]
+        answer = df.iloc[match_index]["Answer"]
+        try:
+            if user_lang != "en":
+                translated = translator.translate(answer, dest=user_lang)
+                if translated.text.strip():
+                    answer = translated.text
+        except Exception as e:
+            print("⚠️ Translation error:", e)
+        return answer, False
 
-    # 📝 Log unknown question for review
-    log_unknown_question(user_input, "Guest" if user_is_guest else "Member")
+
+     # 🏥 Health-related query
+    if is_health_query(translated_input):
+        health_info = fetch_medline_info(translated_input, user_lang)
+        if health_info:
+            return health_info, False
 
     # ❌ Fallback response
     fallback = "🤖 I'm not sure about that yet. Please contact Hosla at 📞7811009309 for more information."
@@ -369,20 +524,37 @@ def get_answer_from_faq(query: str, is_guest: bool = True) -> tuple:
             fallback = translator.translate(fallback, dest=user_lang).text
     except:
         pass
+
+    log_unknown_question(user_input, "Guest" if user_is_guest else "Member")
     return fallback, True
 
-def log_unknown_question(question_text, user_name):
+last_logged = {}
+
+def log_unknown_question(query, user_name):
+    global last_logged
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)  # Current time in IST
+    key = (query.strip().lower(), user_name.strip().lower())
+
+    # Cooldown check (10 seconds)
+    if key in last_logged and (now - last_logged[key]).total_seconds() < 10:
+        print("[HUGGINGFACE LOG] Skipping duplicate log.")
+        return
+
+    last_logged[key] = now
     try:
-        new_row = pd.DataFrame([{
-            "Question": question_text,
-            "Answer": "",
-            "User": user_name,
-            "Timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }])
-        new_row.to_csv(FAQ_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
-        print("📝 Question logged for review.")
+        timestamp = now.strftime("%d-%m-%Y %H:%M:%S")
+        data = {
+            "question": query,
+            "asked_by": user_name,
+            "timestamp": timestamp
+        }
+        webhook_url = "https://script.google.com/macros/s/AKfycbxAohOvjPAnEYCEnaePL3u2FnQiUIGf347PTlP89vX7IW15kh3YOHbi7nCX_jKLlCpg/exec"
+        print("[HUGGINGFACE LOG] Sending to Google Sheets:", data)
+        res = requests.post(webhook_url, data=data, timeout=5)
+        print("[HUGGINGFACE LOG] Google Sheets responded:", res.status_code, res.text)
     except Exception as e:
-        print(f"❌ Failed to log: {e}")
+        print("[HUGGINGFACE LOG] Error logging to Google Sheet:", e)
 
-__all__ = ["get_answer_from_faq", "detect_language_safe"]
-
+        
+__all__ = ["get_answer_from_faq", "detect_language_safe", "log_unknown_question"]
