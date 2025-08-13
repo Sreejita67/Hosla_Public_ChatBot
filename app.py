@@ -1,15 +1,16 @@
 from bs4 import XMLParsedAsHTMLWarning
 import warnings
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import traceback
 
-# Import your entire chatbot logic here
-from faq_module import get_answer_from_faq, detect_language_safe
+# ✅ Import core functions
+from faq_module import get_answer_from_faq, detect_language_safe, log_unknown_question
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend interaction
+CORS(app)
 
 @app.route("/")
 def index():
@@ -22,8 +23,13 @@ def get_answer():
 
         user_query = data.get("query", "")
         user_is_guest = data.get("is_guest", True)
+        user_name = "Guest" if user_is_guest else "Member"
 
         response, should_log = get_answer_from_faq(user_query, user_is_guest)
+
+        # ✅ Log only if marked for logging
+        if should_log:
+            log_unknown_question(user_query, user_name)
 
         return jsonify({
             "response": response,
